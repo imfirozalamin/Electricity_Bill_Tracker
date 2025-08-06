@@ -44,6 +44,7 @@ class ElectricityBillTracker(QMainWindow):
         self.base_path = self._get_base_path()
         self.history_file = os.path.join(self.base_path, "electricity_bill_history.json")
         self.initial_reading_file = os.path.join(self.base_path, "initial_reading.json")
+        self.devices_file = os.path.join(self.base_path, "devices.json")
         
         # Set the window icon. The icon file must be in the same folder.
         icon_path = resource_path('icon.ico')
@@ -54,6 +55,7 @@ class ElectricityBillTracker(QMainWindow):
         self.unit_cost = 12  # ₹12 per unit
 
         self.history_data = self.load_history()
+        self.devices_data = self.load_devices()
         self.current_reading = self.get_initial_reading()
 
         # Dark theme colors
@@ -69,9 +71,12 @@ class ElectricityBillTracker(QMainWindow):
         self.apply_dark_theme()
 
         # Initial updates after UI is built
+        self.refresh_current_reading()
         self.update_history_table()
         self.update_summary()
         self.update_analytics()
+        self.update_devices_table()
+        self.update_usage_estimation()
         
     def _get_base_path(self):
         """
@@ -203,6 +208,25 @@ class ElectricityBillTracker(QMainWindow):
                 color: white;
             }}
 
+            #devicesTable {{
+                background-color: white;
+                color: black;
+                gridline-color: #cccccc;
+                alternate-background-color: #f0f0f0;
+            }}
+            #devicesTable::item {{
+                color: black;
+                border-bottom: 1px solid #eee;
+            }}
+            #devicesTable::item:selected {{
+                background-color: {self.accent_dark};
+                color: white;
+            }}
+            #devicesTable QHeaderView::section {{
+                background-color: #333333;
+                color: white;
+            }}
+
             QMessageBox {{
                 background-color: #f0f0f0;
             }}
@@ -226,6 +250,12 @@ class ElectricityBillTracker(QMainWindow):
         """)
 
     def get_initial_reading(self):
+        # If we have history data, always use the most recent reading as the current reading
+        if self.history_data:
+            last_entry = max(self.history_data, key=lambda x: QDate.fromString(x["date"], "dd-MM-yyyy").toJulianDay())
+            return last_entry["new_reading"]
+        
+        # If no history but we have an initial reading file, use that
         if os.path.exists(self.initial_reading_file):
             try:
                 with open(self.initial_reading_file, "r") as f:
@@ -233,12 +263,15 @@ class ElectricityBillTracker(QMainWindow):
                     return float(data["initial_reading"])
             except:
                 pass
-
-        if not self.history_data:
-            return 0.0
-        else:
-            last_entry = max(self.history_data, key=lambda x: QDate.fromString(x["date"], "dd-MM-yyyy").toJulianDay())
-            return last_entry["new_reading"]
+        
+        # No data at all, return 0
+        return 0.0
+    
+    def refresh_current_reading(self):
+        """Refresh the current reading display based on the latest data"""
+        self.current_reading = self.get_initial_reading()
+        if hasattr(self, 'current_reading_label'):
+            self.current_reading_label.setText(f"Current Meter Reading: {self.current_reading}")
 
     def init_ui(self):
         main_widget = QWidget()
@@ -260,6 +293,10 @@ class ElectricityBillTracker(QMainWindow):
         self.analytics_tab = QWidget()
         self.init_analytics_tab()
         self.tabs.addTab(self.analytics_tab, "Analytics")
+
+        self.devices_tab = QWidget()
+        self.init_devices_tab()
+        self.tabs.addTab(self.devices_tab, "Devices")
 
         main_layout.addWidget(header)
         main_layout.addWidget(self.tabs)
@@ -436,6 +473,76 @@ class ElectricityBillTracker(QMainWindow):
         layout.addWidget(period_group, 0)
         layout.addWidget(graph_group, 1)
         self.analytics_tab.setLayout(layout)
+
+    def init_devices_tab(self):
+        layout = QVBoxLayout()
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(15)
+
+        # Add Device Section
+        add_device_group = QGroupBox("Add New Device")
+        add_device_layout = QVBoxLayout()
+        
+        device_input_layout = QHBoxLayout()
+        device_input_layout.addWidget(QLabel("Device Name:"))
+        self.device_name_input = QLineEdit()
+        self.device_name_input.setPlaceholderText("e.g., LED TV, Refrigerator, AC")
+        device_input_layout.addWidget(self.device_name_input)
+        
+        device_input_layout.addWidget(QLabel("Power (Watts):"))
+        self.device_power_input = QLineEdit()
+        self.device_power_input.setPlaceholderText("e.g., 150")
+        device_input_layout.addWidget(self.device_power_input)
+        
+        device_input_layout.addWidget(QLabel("Hours/Day:"))
+        self.device_hours_input = QLineEdit()
+        self.device_hours_input.setPlaceholderText("e.g., 8")
+        device_input_layout.addWidget(self.device_hours_input)
+        
+        self.add_device_btn = QPushButton("Add Device")
+        self.add_device_btn.setStyleSheet(self.get_button_style(self.accent_color))
+        self.add_device_btn.clicked.connect(self.add_device)
+        device_input_layout.addWidget(self.add_device_btn)
+        
+        add_device_layout.addLayout(device_input_layout)
+        add_device_group.setLayout(add_device_layout)
+
+        # Devices Table
+        devices_group = QGroupBox("Your Devices")
+        devices_layout = QVBoxLayout()
+        
+        self.devices_table = QTableWidget()
+        self.devices_table.setObjectName("devicesTable")
+        self.devices_table.setColumnCount(6)
+        self.devices_table.setHorizontalHeaderLabels([
+            "Device Name", "Power (W)", "Hours/Day", "Daily kWh", "Monthly kWh", "Actions"
+        ])
+        self.devices_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.devices_table.setAlternatingRowColors(True)
+        
+        devices_layout.addWidget(self.devices_table)
+        devices_group.setLayout(devices_layout)
+
+        # Usage Estimation
+        estimation_group = QGroupBox("Usage Estimation")
+        estimation_layout = QVBoxLayout()
+        
+        self.estimation_label = QLabel("Total Estimated Monthly Usage: 0.00 kWh (₹0.00)")
+        self.estimation_label.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        self.estimation_label.setStyleSheet(f"color: {self.accent_color};")
+        
+        comparison_layout = QHBoxLayout()
+        self.comparison_label = QLabel("Comparison with actual usage will appear here")
+        comparison_layout.addWidget(self.comparison_label)
+        
+        estimation_layout.addWidget(self.estimation_label)
+        estimation_layout.addLayout(comparison_layout)
+        estimation_group.setLayout(estimation_layout)
+
+        layout.addWidget(add_device_group)
+        layout.addWidget(devices_group)
+        layout.addWidget(estimation_group)
+        self.devices_tab.setLayout(layout)
         
     def get_button_style(self, color):
         try:
@@ -485,7 +592,7 @@ class ElectricityBillTracker(QMainWindow):
                 json.dump({"initial_reading": initial_reading}, f)
 
             self.current_reading = initial_reading
-            self.current_reading_label.setText(f"Current Meter Reading: {self.current_reading}")
+            self.refresh_current_reading()
             self.initial_group.setVisible(False)
             self.meter_group.setVisible(True)
             QMessageBox.information(self, "Success", f"Initial reading set to {initial_reading}")
@@ -550,14 +657,21 @@ class ElectricityBillTracker(QMainWindow):
             
             self.history_data.append(entry)
             self.save_history()
+            
+            # Update current reading to the new reading
             self.current_reading = new_reading
-            self.current_reading_label.setText(f"Current Meter Reading: {self.current_reading}")
+            self.refresh_current_reading()
+            
+            # Clear inputs
             self.new_reading_input.clear()
             self.consumption_label.setText("Consumption: 0.00 units")
             self.cost_label.setText("Total Cost: ₹0.00")
+            
+            # Update all displays
             self.update_history_table()
             self.update_summary()
             self.update_analytics()
+            self.update_usage_estimation()  # Update device comparison
             
             if not self.meter_group.isVisible():
                 self.meter_group.setVisible(True)
@@ -808,6 +922,140 @@ class ElectricityBillTracker(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "Load Error", f"Could not load history file. It may be corrupted.\nError: {e}")
             return []
+
+    def load_devices(self):
+        try:
+            if os.path.exists(self.devices_file):
+                with open(self.devices_file, "r") as f:
+                    return json.load(f)
+            return []
+        except Exception as e:
+            QMessageBox.critical(self, "Load Error", f"Could not load devices file. It may be corrupted.\nError: {e}")
+            return []
+
+    def save_devices(self):
+        try:
+            with open(self.devices_file, "w") as f:
+                json.dump(self.devices_data, f, indent=2)
+        except Exception as e:
+            QMessageBox.warning(self, "Save Error", f"Could not save devices file: {e}")
+
+    def add_device(self):
+        try:
+            name = self.device_name_input.text().strip()
+            power = float(self.device_power_input.text())
+            hours = float(self.device_hours_input.text())
+            
+            if not name:
+                QMessageBox.warning(self, "Invalid Input", "Please enter a device name.")
+                return
+            
+            if power <= 0 or hours <= 0:
+                QMessageBox.warning(self, "Invalid Input", "Power and hours must be positive numbers.")
+                return
+            
+            if hours > 24:
+                QMessageBox.warning(self, "Invalid Input", "Hours per day cannot exceed 24.")
+                return
+            
+            # Check if device already exists
+            for device in self.devices_data:
+                if device["name"].lower() == name.lower():
+                    QMessageBox.warning(self, "Duplicate Device", "A device with this name already exists.")
+                    return
+            
+            device = {
+                "name": name,
+                "power_watts": power,
+                "hours_per_day": hours,
+                "daily_kwh": (power * hours) / 1000,
+                "monthly_kwh": (power * hours * 30) / 1000
+            }
+            
+            self.devices_data.append(device)
+            self.save_devices()
+            self.update_devices_table()
+            self.update_usage_estimation()
+            
+            # Clear inputs
+            self.device_name_input.clear()
+            self.device_power_input.clear()
+            self.device_hours_input.clear()
+            
+            QMessageBox.information(self, "Success", f"Device '{name}' added successfully!")
+            
+        except ValueError:
+            QMessageBox.warning(self, "Invalid Input", "Please enter valid numbers for power and hours.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not add device: {e}")
+
+    def remove_device(self, device_name):
+        try:
+            self.devices_data = [d for d in self.devices_data if d["name"] != device_name]
+            self.save_devices()
+            self.update_devices_table()
+            self.update_usage_estimation()
+            QMessageBox.information(self, "Success", f"Device '{device_name}' removed successfully!")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not remove device: {e}")
+
+    def update_devices_table(self):
+        if not hasattr(self, 'devices_table'):
+            return
+            
+        self.devices_table.setRowCount(len(self.devices_data))
+        
+        for row, device in enumerate(self.devices_data):
+            self.devices_table.setItem(row, 0, QTableWidgetItem(device["name"]))
+            self.devices_table.setItem(row, 1, QTableWidgetItem(f"{device['power_watts']:.0f}"))
+            self.devices_table.setItem(row, 2, QTableWidgetItem(f"{device['hours_per_day']:.1f}"))
+            self.devices_table.setItem(row, 3, QTableWidgetItem(f"{device['daily_kwh']:.3f}"))
+            self.devices_table.setItem(row, 4, QTableWidgetItem(f"{device['monthly_kwh']:.2f}"))
+            
+            # Add remove button
+            remove_btn = QPushButton("Remove")
+            remove_btn.setStyleSheet(self.get_button_style(self.warning_color))
+            remove_btn.clicked.connect(lambda checked, name=device["name"]: self.remove_device(name))
+            self.devices_table.setCellWidget(row, 5, remove_btn)
+
+    def update_usage_estimation(self):
+        if not hasattr(self, 'estimation_label'):
+            return
+            
+        total_monthly_kwh = sum(device["monthly_kwh"] for device in self.devices_data)
+        total_cost = total_monthly_kwh * self.unit_cost
+        
+        self.estimation_label.setText(f"Total Estimated Monthly Usage: {total_monthly_kwh:.2f} kWh (₹{total_cost:.2f})")
+        
+        # Compare with actual usage if available
+        if hasattr(self, 'comparison_label') and self.history_data:
+            today = QDate.currentDate()
+            this_month_actual = sum(
+                entry["units"] for entry in self.history_data
+                if QDate.fromString(entry["date"], "dd-MM-yyyy").month() == today.month()
+                and QDate.fromString(entry["date"], "dd-MM-yyyy").year() == today.year()
+            )
+            
+            if this_month_actual > 0:
+                difference = this_month_actual - total_monthly_kwh
+                if abs(difference) < 1:
+                    comparison_text = f"📊 Actual this month: {this_month_actual:.2f} kWh - Very close to estimate!"
+                    color = "#4CAF50"  # Green
+                elif difference > 0:
+                    comparison_text = f"📊 Actual this month: {this_month_actual:.2f} kWh - {difference:.2f} kWh more than estimate"
+                    color = "#FF9800"  # Orange
+                else:
+                    comparison_text = f"📊 Actual this month: {this_month_actual:.2f} kWh - {abs(difference):.2f} kWh less than estimate"
+                    color = "#2196F3"  # Blue
+                
+                self.comparison_label.setText(comparison_text)
+                self.comparison_label.setStyleSheet(f"color: {color}; font-weight: bold;")
+            else:
+                self.comparison_label.setText("No actual usage data for this month yet")
+                self.comparison_label.setStyleSheet(f"color: {self.dark_text};")
+        elif hasattr(self, 'comparison_label'):
+            self.comparison_label.setText("Add some usage history to see comparison")
+            self.comparison_label.setStyleSheet(f"color: {self.dark_text};")
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
